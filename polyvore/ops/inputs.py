@@ -102,7 +102,7 @@ def batch_with_dynamic_pad(dataset, batch_size, add_summaries=True):
         batch_size,
         padded_shapes={
             "set_id": [],
-            "images": [None, None, None, 3],  # Assuming RGB images.
+            "images": [None, None], #something is wrong here
             "mask": [None],
             "loss_mask": [None],
             "image_ids": [None],
