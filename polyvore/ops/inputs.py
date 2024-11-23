@@ -47,75 +47,82 @@ def prefetch_input_data(file_pattern, batch_size, is_training, values_per_shard,
     # Get list of data files using tf.io.gfile.glob
     data_files = tf.io.gfile.glob(file_pattern)
     if not data_files:
-        raise ValueError(f"Found no input files matching {file_pattern}")
+        raise FileNotFoundError(f"Found no input files matching {file_pattern}")
     else:
         print(f"Prefetching values from {len(data_files)} files matching {file_pattern}")
 
-    # Create a dataset from TFRecord files
-    dataset = tf.data.TFRecordDataset(data_files)
+    dataset = tf.data.Dataset.from_tensor_slices(data_files)
 
-    # Map the parse function to decode each record
-    dataset = dataset.map(lambda serialized: parse_sequence_example(
-        serialized,
-        set_id='set_id',  # Adjust as per context feature name
-        image_feature='image_feature',  # Adjust as per image feature name
-        image_index='image_index',  # Adjust as per image index feature name
-        caption_feature='caption_feature',  # Adjust as per caption feature name
-        number_set_images=5  # Adjust the number of images per set
-    ))
-
-    # Shuffle the dataset if in training mode
     if is_training:
-        dataset = dataset.shuffle(buffer_size=10000)
+        dataset = dataset.shuffle(buffer_size=len(data_files))
 
-    # Batch the dataset
+    def _read_file(filename):
+        return tf.data.TFRecordDataset(filename)
+
+    dataset = dataset.interleave(
+        _read_file,
+        cycle_length=num_reader_threads,
+        block_length=1,
+        num_parallel_calls=tf.data.AUTOTUNE
+    )
+
+    dataset = dataset.shuffle(buffer_size=values_per_shard * input_queue_capacity_factor)
     dataset = dataset.batch(batch_size)
+    dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
 
     return dataset
 
 
-def batch_with_dynamic_pad(images_and_captions, batch_size, queue_capacity, add_summaries=True):
-    """Batches input images and captions, with dynamic padding."""
+def batch_with_dynamic_pad(dataset, batch_size, add_summaries=True):
+    """Batches input images and captions with dynamic padding."""
+    def _prepare_batch(set_id, images, image_ids, captions, likes):
+        image_seq_length = tf.shape(image_ids)[0]
+        input_length = image_seq_length  # No subtraction here.
 
-    # Convert the list of images and captions into a tf.data.Dataset
-    dataset = tf.data.Dataset.from_generator(
-        lambda: images_and_captions,
-        output_signature=(
-            tf.TensorSpec(shape=(), dtype=tf.string),  # set_id
-            tf.TensorSpec(shape=(None,), dtype=tf.string),  # images (list of strings)
-            tf.TensorSpec(shape=(None,), dtype=tf.int64),  # image_ids
-            tf.TensorSpec(shape=(None,), dtype=tf.int64),  # captions
-            tf.TensorSpec(shape=(), dtype=tf.int64)  # likes
-        )
-    )
+        cap_indicator = tf.cast(tf.not_equal(captions, 0), tf.int32)
+        indicator = tf.ones([input_length], dtype=tf.int32)
+        loss_indicator = tf.ones([image_seq_length], dtype=tf.int32)
 
-    # Dynamic padding will be applied to images and captions
-    padded_dataset = dataset.padded_batch(
+        images = tf.stack(images)
+
+        return {
+            "set_id": set_id,
+            "images": images,
+            "mask": indicator,
+            "loss_mask": loss_indicator,
+            "image_ids": image_ids,
+            "captions": captions,
+            "cap_mask": cap_indicator,
+            "likes": likes
+        }
+
+    dataset = dataset.map(_prepare_batch)
+
+    dataset = dataset.padded_batch(
         batch_size,
-        padded_shapes=(
-            [],  # set_id
-            [None],  # images
-            [None],  # image_ids
-            [None],  # captions
-            []  # likes
-        ),
-        padding_values=(
-            '',  # set_id padding
-            '',  # image padding
-            0,   # image_ids padding
-            0,   # caption padding
-            0    # likes padding
-        )
+        padded_shapes={
+            "set_id": [],
+            "images": [None, None, None, 3],  # Assuming RGB images.
+            "mask": [None],
+            "loss_mask": [None],
+            "image_ids": [None],
+            "captions": [None],
+            "cap_mask": [None],
+            "likes": []
+        },
+        padding_values={
+            "set_id": "",
+            "images": 0.0,
+            "mask": 0,
+            "loss_mask": 0,
+            "image_ids": 0,
+            "captions": 0,
+            "cap_mask": 0,
+            "likes": 0
+        }
     )
 
-    # Optionally add summary information about the captions
     if add_summaries:
-        padded_dataset = padded_dataset.map(lambda set_id, images, image_ids, captions, likes: (
-            set_id,
-            images,
-            image_ids,
-            captions,
-            likes
-        ))
+        dataset = dataset.map(lambda x: {**x, "caption_length": tf.reduce_sum(x["mask"])})
 
-    return padded_dataset
+    return dataset
