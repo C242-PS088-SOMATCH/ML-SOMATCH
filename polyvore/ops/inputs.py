@@ -73,56 +73,71 @@ def prefetch_input_data(file_pattern, batch_size, is_training, values_per_shard,
     return dataset
 
 
-def batch_with_dynamic_pad(dataset, batch_size, add_summaries=True):
+def batch_with_dynamic_pad(images_and_captions, batch_size, add_summaries=True):
     """Batches input images and captions with dynamic padding."""
-    def _prepare_batch(set_id, images, image_ids, captions, likes):
+    enqueue_list = []
+
+    for set_id, images, image_ids, captions, likes in images_and_captions:
         image_seq_length = tf.shape(image_ids)[0]
-        input_length = image_seq_length  # No subtraction here.
+        input_length = image_seq_length  # No need to subtract by 0, it's essentially just length
 
-        cap_indicator = tf.cast(tf.not_equal(captions, 0), tf.int32)
-        indicator = tf.ones([input_length], dtype=tf.int32)
-        loss_indicator = tf.ones([image_seq_length], dtype=tf.int32)
+        # Create a mask for captions
+        cap_indicator = tf.cast(tf.not_equal(captions, tf.zeros_like(captions)), tf.int32)
+        indicator = tf.ones([input_length], dtype=tf.int32)  # For image sequence
+        loss_indicator = tf.ones([image_seq_length], dtype=tf.int32)  # Loss mask
 
+        # Stack images along the batch axis (from list to tensor)
         images = tf.stack(images)
 
-        return {
-            "set_id": set_id,
-            "images": images,
-            "mask": indicator,
-            "loss_mask": loss_indicator,
-            "image_ids": image_ids,
-            "captions": captions,
-            "cap_mask": cap_indicator,
-            "likes": likes
-        }
+        # Add to the enqueue list
+        enqueue_list.append([set_id, images, indicator, loss_indicator, image_ids, captions, cap_indicator, likes])
 
-    dataset = dataset.map(_prepare_batch)
+    # In TensorFlow 2.x, use tf.data.Dataset for batching and padding
+    # Create a dataset from the list of batched data
+    dataset = tf.data.Dataset.from_generator(
+        lambda: iter(enqueue_list),
+        output_signature=(
+            tf.TensorSpec(shape=(), dtype=tf.string),  # set_id
+            tf.TensorSpec(shape=(None, None, 3), dtype=tf.float32),  # images (dynamic height/width)
+            tf.TensorSpec(shape=(None,), dtype=tf.int32),  # mask
+            tf.TensorSpec(shape=(None,), dtype=tf.int32),  # loss_mask
+            tf.TensorSpec(shape=(None,), dtype=tf.int64),  # image_ids
+            tf.TensorSpec(shape=(None,), dtype=tf.int64),  # captions
+            tf.TensorSpec(shape=(None,), dtype=tf.int32),  # cap_mask
+            tf.TensorSpec(shape=(), dtype=tf.int64)  # likes
+        )
+    )
 
+    # Now apply dynamic padding and batching
     dataset = dataset.padded_batch(
         batch_size,
         padded_shapes={
-            "set_id": [],
-            "images": [None, None], #something is wrong here
-            "mask": [None],
-            "loss_mask": [None],
-            "image_ids": [None],
-            "captions": [None],
-            "cap_mask": [None],
-            "likes": []
+            "set_id": [],  # Scalar (no padding needed)
+            "images": [None, None, 3],  # Dynamic image shape (height, width, 3 color channels)
+            "mask": [None],  # Mask for captions
+            "loss_mask": [None],  # Loss mask
+            "image_ids": [None],  # Image IDs sequence (variable length)
+            "captions": [None],  # Caption sequence (variable length)
+            "cap_mask": [None],  # Caption mask (same length as captions)
+            "likes": []  # Scalar
         },
         padding_values={
             "set_id": "",
-            "images": 0.0,
-            "mask": 0,
-            "loss_mask": 0,
-            "image_ids": 0,
-            "captions": 0,
-            "cap_mask": 0,
-            "likes": 0
+            "images": 0.0,  # Padding value for images
+            "mask": 0,  # Padding value for mask
+            "loss_mask": 0,  # Padding value for loss mask
+            "image_ids": 0,  # Padding value for image IDs
+            "captions": 0,  # Padding value for captions
+            "cap_mask": 0,  # Padding value for caption mask
+            "likes": 0  # Padding value for likes
         }
     )
 
+    # Optionally, add summaries for caption length
     if add_summaries:
-        dataset = dataset.map(lambda x: {**x, "caption_length": tf.reduce_sum(x["mask"])})
+        dataset = dataset.map(lambda x: {
+            **x,
+            "caption_length": tf.reduce_sum(x["mask"], axis=1)
+        })
 
     return dataset
