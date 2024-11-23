@@ -11,7 +11,7 @@ import tensorflow as tf
 def distort_image(image):
     """Perform random distortions on an image."""
     # Randomly flip horizontally. No color distortion.
-    with tf.name_scope("flip_horizontal", values=[image]):
+    with tf.name_scope("flip_horizontal"):
         image = tf.image.random_flip_left_right(image)
 
     return image
@@ -45,10 +45,10 @@ def process_image(encoded_image,
     # Helper function to log an image summary to the visualizer. Summaries are
     # only logged in thread 0.
     def image_summary(name, image):
-        tf.image_summary(name, tf.expand_dims(image, 0))
+        tf.summary.image(name, tf.expand_dims(image, 0))
 
     # Decode image into a float32 Tensor of shape [?, ?, 3] with values in [0, 1).
-    with tf.name_scope("decode", values=[encoded_image]):
+    with tf.name_scope("decode"):
         if image_format == "jpeg":
             image = tf.image.decode_jpeg(encoded_image, channels=3)
         elif image_format == "png":
@@ -61,14 +61,14 @@ def process_image(encoded_image,
     # Resize image.
     assert (resize_height > 0) == (resize_width > 0)
     if resize_height:
-        image = tf.image.resize_images(image,
+        image = tf.image.resize(image,
                                     size=[resize_height, resize_width],
                                     method=tf.image.ResizeMethod.BILINEAR)
 
     # Crop to final dimensions. In the Polyvore model, no cropping is used
     # since we set height=resize_height and width=resize_width
     if is_training:
-        image = tf.random_crop(image, [height, width, 3])
+        image = tf.image.random_crop(image, [height, width, 3])
     else:
         image = tf.image.resize_image_with_crop_or_pad(image, height, width)
 
@@ -81,6 +81,6 @@ def process_image(encoded_image,
     image_summary("final_image/" + str(image_idx), image)
 
     # Rescale to [-1,1] instead of [0, 1]
-    image = tf.sub(image, 0.5)
-    image = tf.mul(image, 2.0)
+    image = tf.subtract(image, 0.5)
+    image = tf.multiply(image, 2.0)
     return image
