@@ -1,5 +1,11 @@
 ### How to run
 
+1. Install tensorflow
+```
+pip install tensorflow
+```
+2. Run inception_v3.py to download the inception v3 model
+3. Run this command in terminal
 ```
 python train.py `
     --input_file_pattern="Your-Path/data/tf_records/train-no-dup-*" `
