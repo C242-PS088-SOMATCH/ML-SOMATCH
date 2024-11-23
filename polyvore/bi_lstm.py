@@ -26,9 +26,9 @@ class PolyvoreModel(object):
         self.train_inception = train_inception
 
         # Reader for the input data.
-        self.dataset = tf.data.TFRecordDataset(filenames="data/tf_records/*.tfrecord")
-        self.dataset = self.dataset.map(self._parse_function)
-        self.dataset = self.dataset.shuffle(buffer_size=1000).batch(batch_size=32)
+        # self.dataset = tf.data.TFRecordDataset(filenames="data/tf_records/*.tfrecord")
+        # self.dataset = self.dataset.map(self._parse_function)
+        # self.dataset = self.dataset.shuffle(buffer_size=1000).batch(batch_size=32)
 
         # Initialize all variables with a random uniform initializer.
         self.initializer = tf.random_uniform_initializer(
@@ -116,36 +116,36 @@ class PolyvoreModel(object):
         self.lstm_output = None
         self.lstm_xent_loss = None
 
-    def _parse_function(self, serialized_example):
-        """Parses a single serialized tf.Example.
+    # def _parse_function(self, serialized_example):
+    #     """Parses a single serialized tf.Example.
 
-        Args:
-        serialized_example: A scalar string Tensor, a single serialized Example.
+    #     Args:
+    #     serialized_example: A scalar string Tensor, a single serialized Example.
 
-        Returns:
-        A dictionary of parsed tensors.
-        """
-        # Define the features to parse from the TFRecord file.
-        feature_map = {
-            'image': tf.io.FixedLenFeature([], tf.string),  # Example for an image feature
-            'caption': tf.io.VarLenFeature(tf.int64),  # Example for a caption feature
-            'label': tf.io.FixedLenFeature([1], tf.int64)  # Example for a label feature
-        }
+    #     Returns:
+    #     A dictionary of parsed tensors.
+    #     """
+    #     # Define the features to parse from the TFRecord file.
+    #     feature_map = {
+    #         'image': tf.io.FixedLenFeature([], tf.string),  # Example for an image feature
+    #         'caption': tf.io.VarLenFeature(tf.int64),  # Example for a caption feature
+    #         'label': tf.io.FixedLenFeature([1], tf.int64)  # Example for a label feature
+    #     }
     
-        # Parse the example according to the feature map.
-        parsed_features = tf.io.parse_single_example(serialized_example, feature_map)
+    #     # Parse the example according to the feature map.
+    #     parsed_features = tf.io.parse_single_example(serialized_example, feature_map)
         
-        # Decode the image (assuming it's stored as a string in the TFRecord)
-        image = tf.io.decode_jpeg(parsed_features['image'], channels=3)
+    #     # Decode the image (assuming it's stored as a string in the TFRecord)
+    #     image = tf.io.decode_jpeg(parsed_features['image'], channels=3)
         
-        # Optional: Process the image if needed (resize, normalize, etc.)
-        image = tf.image.resize(image, [self.config.image_height, self.config.image_width])
+    #     # Optional: Process the image if needed (resize, normalize, etc.)
+    #     image = tf.image.resize(image, [self.config.image_height, self.config.image_width])
         
-        # Retrieve other features (e.g., caption, label)
-        caption = parsed_features['caption']
-        label = parsed_features['label']
+    #     # Retrieve other features (e.g., caption, label)
+    #     caption = parsed_features['caption']
+    #     label = parsed_features['label']
         
-        return image, caption, label
+    #     return image, caption, label
 
     def is_training(self):
         """Returns true if the model is built for training mode."""
@@ -168,13 +168,13 @@ class PolyvoreModel(object):
         Inputs of the model.
         """
         if self.mode == "inference":
-            # In inference mode, images and inputs are fed via placeholders.
-            image_feed = tf.placeholder(dtype=tf.string, shape=[], name="image_feed")
+            # In inference mode, images and inputs are fed via keras Input.
+            image_feed = tf.keras.Input(dtype=tf.string, shape=(), name="image_feed")
             # Process image and insert batch dimensions.
             image_feed = self.process_image(image_feed)
         
-            input_feed = tf.placeholder(dtype=tf.int64,
-                                        shape=[None],  # batch_size
+            input_feed = tf.keras.Input(dtype=tf.int64,
+                                        shape=(None,),  # batch_size
                                         name="input_feed")
 
             # Process image and insert batch dimensions.
@@ -182,8 +182,8 @@ class PolyvoreModel(object):
             cap_seqs = tf.expand_dims(input_feed, 1)
 
             # No target sequences or input mask in inference mode.
-            input_mask = tf.placeholder(dtype=tf.int64,
-                                        shape=[1, 8],  # batch_size
+            input_mask = tf.keras.Input(dtype=tf.int64,
+                                        shape=(1, 8),  # batch_size
                                         name="input_mask")
             cap_mask = None
             loss_mask = None
@@ -192,45 +192,51 @@ class PolyvoreModel(object):
         else:
             # Prefetch serialized SequenceExample protos.
             dataset = input_ops.prefetch_input_data(
-                file_pattern=self.config.input_file_pattern,
-                batch_size=self.config.batch_size,
+                self.config.input_file_pattern,
                 is_training=self.is_training(),
+                batch_size=self.config.batch_size,
                 values_per_shard=self.config.values_per_input_shard,
                 input_queue_capacity_factor=self.config.input_queue_capacity_factor,
-                num_reader_threads=self.config.num_input_reader_threads
+                num_reader_threads=self.config.num_input_reader_threads,
             )
 
+            dataset = dataset.unbatch()
+            dataset = dataset.map(lambda x: input_ops.parse_sequence_example(
+                x,
+                set_id=self.config.set_id_name,
+                image_feature=self.config.image_feature_name,
+                image_index=self.config.image_index_name,
+                caption_feature=self.config.caption_feature_name,
+                number_set_images=self.config.number_set_images
+            ))
+            
+            # Process dataset to extract features and batch with dynamic padding.
+            @tf.function
+            def process_images(encoded_images):
+                num_images = tf.shape(encoded_images)[0]
+                result = tf.TensorArray(dtype=tf.float32, size=num_images)  # Ganti tf.float32 dengan tipe data output
+                for i in tf.range(num_images):
+                    result = result.write(i, self.process_image(encoded_images[i], i))
+                return result.stack()
 
-            # Image processing and random distortion. Split across multiple threads
-            # with each thread applying a slightly different distortion. But we only
-            # use one thread in our Polyvore model. likes are not used.
-            images_and_captions = []
-            for thread_id in range(self.config.num_preprocess_threads):
-                serialized_sequence_example = dataset.dequeue()
-                set_id, encoded_images, image_ids, captions, likes = (
-                    input_ops.parse_sequence_example(
-                    serialized_sequence_example,
-                    set_id =self.config.set_id_name,
-                    image_feature=self.config.image_feature_name,
-                    image_index=self.config.image_index_name,
-                    caption_feature=self.config.caption_feature_name,
-                    number_set_images=self.config.number_set_images))
-                
-                images = []
-                for i in range(self.config.number_set_images):
-                    images.append(self.process_image(encoded_images[i],image_idx=i))
-                
-                images_and_captions.append([set_id, images, image_ids, captions, likes])
+            dataset = dataset.map(lambda set_id, encoded_images, image_ids, captions, likes: (
+                set_id,
+                process_images(encoded_images),
+                image_ids,
+                captions,
+                likes
+            ))
 
-            # Batch inputs.
-            queue_capacity = (5 * self.config.num_preprocess_threads *
-                                self.config.batch_size)
 
+            dataset = input_ops.batch_with_dynamic_pad(
+                dataset,
+                batch_size=self.config.batch_size,
+                add_summaries=True,
+            )
+
+            iterator = iter(dataset)
             (set_ids, image_seqs, image_ids, input_mask,
-            loss_mask, cap_seqs, cap_mask, likes) = (
-            input_ops.batch_with_dynamic_pad(images_and_captions,
-                                                batch_size=self.config.batch_size,
-                                                queue_capacity=queue_capacity))
+            loss_mask, cap_seqs, cap_mask, likes) = next(iterator)
         
         self.images = image_seqs
         self.input_mask = input_mask
