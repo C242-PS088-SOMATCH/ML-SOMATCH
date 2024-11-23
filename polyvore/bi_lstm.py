@@ -211,13 +211,13 @@ class PolyvoreModel(object):
             ))
             
             # Process dataset to extract features and batch with dynamic padding.
-            @tf.function
+            # Ensure eager execution is enabled
             def process_images(encoded_images):
                 num_images = tf.shape(encoded_images)[0]
-                result = tf.TensorArray(dtype=tf.float32, size=num_images)  # Ganti tf.float32 dengan tipe data output
-                for i in tf.range(num_images):
+                result = tf.TensorArray(dtype=tf.float32, size=num_images)  # Store processed images
+                for i in tf.range(num_images):  # Iterate through images
                     result = result.write(i, self.process_image(encoded_images[i], i))
-                return result.stack()
+                return result.stack()  # Stack the processed images
 
             dataset = dataset.map(lambda set_id, encoded_images, image_ids, captions, likes: (
                 set_id,
