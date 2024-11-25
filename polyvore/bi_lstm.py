@@ -226,7 +226,7 @@ class PolyvoreModel(object):
                 captions,
                 likes
             ))
-
+            
 
             dataset = input_ops.batch_with_dynamic_pad(
                 dataset,
@@ -234,9 +234,21 @@ class PolyvoreModel(object):
                 add_summaries=True,
             )
 
-            iterator = iter(dataset)
-            (set_ids, image_seqs, image_ids, input_mask,
-            loss_mask, cap_seqs, cap_mask, likes) = next(iterator)
+            @tf.function
+            def train_step(dataset):
+                set_ids = tf.constant("", dtype=tf.string)  # Scalar string
+                image_seqs = tf.zeros([1, 1, 1, 3], dtype=tf.float32)  # Dynamic height/width, 3 channels
+                input_mask = tf.zeros([1], dtype=tf.int32)  # Variable-length mask
+                loss_mask = tf.zeros([1], dtype=tf.int64)  # Variable-length loss mask
+                image_ids = tf.zeros([1], dtype=tf.int32)  # Variable-length image_ids
+                cap_seqs = tf.zeros([1, 1], dtype=tf.int64)  # Variable-length captions
+                cap_mask = tf.zeros([1, 1], dtype=tf.int32)  # Variable-length cap_mask
+                likes = tf.zeros([], dtype=tf.int64)  # Scalar integer for likes
+                for batch in dataset:
+                    # Unpack the batch
+                    set_ids, image_seqs, image_ids, input_mask, loss_mask, cap_seqs, cap_mask, likes = batch
+                return set_ids, image_seqs, image_ids, input_mask, loss_mask, cap_seqs, cap_mask, likes
+            set_ids, image_seqs, image_ids, input_mask, loss_mask, cap_seqs, cap_mask, likes = train_step(dataset)
         
         self.images = image_seqs
         self.input_mask = input_mask
