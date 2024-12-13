@@ -53,6 +53,7 @@ class Vocabulary(object):
 def _create_vocab(filename):
     """Creates the vocabulary of word to word_id.
     """
+    # buat vocabulary dictionary
     # Create the vocabulary dictionary.
     word_counts = open(filename).read().splitlines()
     reverse_vocab = [x.split()[0] for x in word_counts]
